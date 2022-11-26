@@ -24,11 +24,14 @@ function onkyoControl(context) {
     self.musicState = 'stopped';
     self.receiverState = 'off';
     self.volume = 0;
+    self.logger.transports[0].level = "debug";
+    self.logger.debug("ONKYO - Initial Setup");
 }
 
 onkyoControl.prototype.validConnectionOptions = function () {
 
     const self = this;
+    self.logger.debug("ONKYO - In validConnectionOptions");
 
     if (
         self.connectionOptions.hasOwnProperty('port')
@@ -36,33 +39,37 @@ onkyoControl.prototype.validConnectionOptions = function () {
         && self.connectionOptions.hasOwnProperty('host')
         && typeof self.connectionOptions.host === 'string'
     ) {
+        self.logger.debug("ONKYO - Valid connection found");
         return true;
     }
     
+    self.logger.debug("ONKYO - No valid connections");
     return false;
 
 }
 
 onkyoControl.prototype.updateZoneList = function() {
-
     const self = this;
 
+    self.logger.debug("ONKYO - Generating zone list");
     self.zoneList.length = 0;
 
     Object.keys(eiscp.get_model_commands(self.connectionOptions.model)).forEach(zone => {
+        self.logger.debug(`ONKYO - Adding zone: ${zone}`);
         self.zoneList.push(zone);
     });
 }
 
 onkyoControl.prototype.onVolumioStart = function () {
     const self = this;
+    self.logger.debug(`ONKYO - Start Volumio Starting`);
     const configFile = this.commandRouter.pluginManager.getConfigurationFile(this.context, 'config.json');
     this.config = new (require('v-conf'))();
     self.logger.debug("ONKYO-CONTROL:  CONFIG FILE: " + configFile);
     this.config.loadFile(configFile);
 
     self.load18nStrings();
-
+    self.logger.debug(`ONKYO - Finished Volumio Starting`);
     return libQ.resolve();
 }
 
@@ -70,6 +77,7 @@ onkyoControl.prototype.onStart = function () {
     const self = this;
     const defer = libQ.defer();
 
+    self.logger.debug(`ONKYO - Starting Plugin`);
     self.socket = io.connect('http://localhost:3000');
 
     // Discover what receivers are available
@@ -126,8 +134,10 @@ onkyoControl.prototype.onStart = function () {
 
                     // Now that we have our connection options completed, let's connect.
                     // We will want to disconnect and reconnect if the receiver option changes.
+                    self.logger.debug(`ONKYO - Connecting to receiver`);
                     eiscp.connect(self.connectionOptions);
 
+                    self.logger.debug(`ONKYO - Triggering onState event`);
                     // Fire off a message to get an initial state back from the backend.
                     self.socket.emit("getState");
                 }
@@ -148,7 +158,7 @@ onkyoControl.prototype.onStart = function () {
     });
 
     self.socket.on('pushState', function (state) {
-
+        self.logger.debug(`ONKYO - State change`);
         if (self.validConnectionOptions()) {
 
             self.logger.debug("ONKYO-CONTROL: *********** ONKYO PLUGIN STATE CHANGE ********");
@@ -156,12 +166,13 @@ onkyoControl.prototype.onStart = function () {
 
             let waitToSend = 0;
             if (!eiscp.is_connected) {
+                self.logger.debug(`ONKYO - Not connected to receiver, trying to connect`);
                 eiscp.connect(self.connectionOptions);
                 waitToSend = 500;
             }
 
             if (state.status !== self.musicState) {
-
+                self.logger.debug(`ONKYO - status has changed to ${state.status}`);
                 self.musicState = state.status;
 
                 switch (self.musicState) {
@@ -169,17 +180,19 @@ onkyoControl.prototype.onStart = function () {
                         // We only want to turn things on if music is playing and
                         // the reveiver has yet to be turned on.
                         if (self.receiverState === 'off') {
+                            self.logger.debug(`ONKYO - receiverState is off`);
                             if (self.config.get('powerOn')) {
-
+                                self.logger.debug(`ONKYO - Turning on receiver`);
                                 self.callReceiver({
                                     "action": 'power',
                                     "value": 'on',
                                     "waitToSend": waitToSend,
                                 });
+                                self.logger.debug(`ONKYO - Back from sending turn on command`);
                             }
 
                             if (self.config.get('setVolume')) {
-
+                                self.logger.debug(`ONKYO - Setting volume of receiver for initial turn on`);
                                 const volume = self.config.get('setVolumeValue', self.config.get('maxVolume', 100));
                                 self.volume = volume;
 
@@ -187,24 +200,28 @@ onkyoControl.prototype.onStart = function () {
                                 // as well so that we can stay in sync. Typically
                                 // after this first set, we shouldn't need to set
                                 // it again.
+                                self.logger.debug(`ONKYO - telling Volumio what the volume should be`);
                                 self.socket.emit("volume", self.volume);
 
+                                self.logger.debug(`ONKYO - Calling receiver to set volume`);
                                 self.callReceiver({
                                     "action": 'volume',
                                     "value": self.volume,
                                     "waitToSend": waitToSend,
                                 });
+                                self.logger.debug(`ONKYO - finished setting the volume`);
                             }
 
                             if (self.config.get('setInput')) {
-
+                                self.logger.debug(`ONKYO - setting input to ${self.config.get('setInputValue')}`);
                                 self.callReceiver({
                                     "action": 'selector',
                                     "value": self.config.get('setInputValue'),
                                     "waitToSend": waitToSend,
                                 });
+                                self.logger.debug(`ONKYO - Finished setting input`);
                             }
-
+                            self.logger.debug(`ONKYO - setting receiver state to on.`);
                             self.receiverState = 'on';
                         }
 
@@ -213,16 +230,18 @@ onkyoControl.prototype.onStart = function () {
                     case 'pause':
 
                         if (self.config.get('standby', true)) {
-
+                            self.logger.debug(`ONKYO - Potentially turn off receiver`);
                             if (self.receiverState === 'on') {
+                                self.logger.debug(`ONKYO - Decided that we should turn off receiver`);
                                 setTimeout(() => {
-
+                                    self.logger.debug(`ONKYO - Waited our timeout for turning off receiver`);
                                     // Every time we pause or stop music, we will
                                     // call into the function based on our turn off
                                     // delay setting. This will stop us from
                                     // accidentally turning the system off if we
                                     // are still using it.
                                     if (self.musicState !== 'play' && self.receiverState === 'on') {
+                                        self.logger.debug(`ONKYO - Decided that we should still turn off the receiver`);
                                         // Update our receiver state so that if we
                                         // do start playing music again, we can
                                         // turn things back on.
@@ -232,6 +251,7 @@ onkyoControl.prototype.onStart = function () {
                                             "value": 'standby',
                                             "waitToSend": waitToSend,
                                         });
+                                        self.logger.debug(`ONKYO - Finished the call to turn off receiver`);
                                     }
                                 }, self.config.get('standbyDelay') * 1000);
                             }
@@ -246,19 +266,22 @@ onkyoControl.prototype.onStart = function () {
                 // Throwing this in an else so that we don't accidentally
                 // overwrite the initial play volume.
                 if (self.receiverState === 'on' && self.volume !== state.volume) {
-
+                    self.logger.debug(`ONKYO - Receiver is on and we should change the volume`);
                     const maxVolume = self.config.get('maxVolume', 100);
                     self.volume = (state.volume) > maxVolume ? maxVolume : state.volume;
+                    self.logger.debug(`ONKYO - Making call to change volume on volume change`);
                     self.callReceiver({
                         "action": 'volume',
                         "value": self.volume,
                         "waitToSend": waitToSend,
                     });
+                    self.logger.debug(`ONKYO - Finished volume change call`);
                 }
             }
         }
     });
 
+    self.logger.debug(`ONKYO - Falling out of on start with a hanging promise.`);
     return defer.promise;
 };
 
@@ -289,15 +312,19 @@ onkyoControl.prototype.getConfigurationFiles = function () {
 onkyoControl.prototype.refreshUIConfig = function() {
     let self = this;
 
+    self.logger.debug(`ONKYO - Refreshing config UI`);
+
     self.commandRouter.getUIConfigOnPlugin('system_hardware', 'onkyo_control', {}).then( config => {
         self.commandRouter.broadcastMessage('pushUiConfig', config);
     });
+
+    self.logger.debug(`ONKYO - Done refreshing config UI`);
 }
 
 onkyoControl.prototype.getUIConfig = function () {
     var defer = libQ.defer();
     var self = this;
-
+    self.logger.debug(`ONKYO - Start UI config`);
     var lang_code = this.commandRouter.sharedVars.get('language_code');
 
     self.commandRouter.i18nJson(__dirname + '/i18n/strings_' + lang_code + '.json',
@@ -305,7 +332,7 @@ onkyoControl.prototype.getUIConfig = function () {
         __dirname + '/UIConfig.json')
         .then( async (uiconf) => {
             self.logger.debug("ONKYO-CONTROL: getUIConfig()");
-
+            self.logger.debug(`ONKYO - Start setting values for UI`);
             uiconf.sections[0].content[0].value = self.config.get('autoDiscovery', true);
             uiconf.sections[0].content[2].value = self.config.get('receiverIP');
             uiconf.sections[0].content[3].value = self.config.get('receiverPort');
@@ -320,9 +347,11 @@ onkyoControl.prototype.getUIConfig = function () {
             uiconf.sections[1].content[7].value = self.config.get('standby', true);
             uiconf.sections[1].content[8].value = self.config.get('standbyDelay');
 
+            self.logger.debug(`ONKYO - Iterate Receivers`);
             for (const [key, receiver] of Object.entries(self.receivers)) {
 
                 const receiverValue = `${receiver.host}_${receiver.model}_${key}_${receiver.port}`;
+                self.logger.debug(`ONKYO - Receiver ID ${receiverValue}`);
                 var option = {
                     "value": receiverValue,
                     "label": receiver.model + " : " + key
@@ -340,10 +369,11 @@ onkyoControl.prototype.getUIConfig = function () {
                     "label": self.getI18nString("SELECT_RECEIVER_MANUAL")
                 };
             }
-
+            self.logger.debug(`ONKYO - Adding Zones`);
             // Because I hate copy / pasting code and because JS
             // will let me do silly things...
             function setZoneOption(zone, selectedZone) {
+                self.logger.debug(`ONKYO - ${zone} : ${selectedZone}`);
 
                 // Removing the "dock" zone. No clue what it is, but if
                 // anyone is looking at this in the future and wants it,
@@ -360,6 +390,7 @@ onkyoControl.prototype.getUIConfig = function () {
             }
 
             if (self.zoneList.length > 0) {
+                self.logger.debug(`ONKYO - zoneList is populated`);
                 const selectedZone = self.config.get('zone', 'main');
 
                 self.zoneList.forEach(zone => {
@@ -367,10 +398,12 @@ onkyoControl.prototype.getUIConfig = function () {
                 });
             }
             else {
+                self.logger.debug(`ONKYO - zoneList is not populated`);
                 setZoneOption('main', 'main');
             }
-
+            self.logger.debug(`ONKYO - Getting inputs for receiver`);
             eiscp.get_command('input-selector', function (err, results) {
+                self.logger.debug(`ONKYO - Inputs returned`);
                 results.forEach(function (input) {
                     const option = {"value": input, "label": input};
                     uiconf.sections[1].content[6].options.push(option);
@@ -380,25 +413,29 @@ onkyoControl.prototype.getUIConfig = function () {
                     }
                 });
             });
-
+            self.logger.debug(`ONKYO - Finished UI settings`);
             defer.resolve(uiconf);
         })
         .fail(function () {
+            self.logger.debug(`ONKYO - Something failed in UI settings`);
             defer.reject(new Error());
         });
 
+    self.logger.debug(`ONKYO - UI load finish, promise still outstanding`);
     return defer.promise;
 };
 
 onkyoControl.prototype.saveConnectionConfig = function (data) {
     var self = this;
 
+    self.logger.debug(`ONKYO - Saving connection config`);
     self.logger.debug("ONKYO-CONTROL: saveConnectionConfig() data: " + JSON.stringify(data));
     self.config.set('autoDiscovery', data['autoDiscovery']);
     self.config.set('receiverSelect', data['receiverSelect'].value);
     const newValues = {};
 
     if (data['receiverSelect'].value !== "manual") {
+        self.logger.debug(`ONKYO - Manual input not selected`);
         /*
             Split up the receiverSelect into its parts
             0: host / ip
@@ -406,7 +443,9 @@ onkyoControl.prototype.saveConnectionConfig = function (data) {
             2: mac
             3: port
         */
+        self.logger.debug(`ONKYO - Splitting input ${data['receiverSelect']}`);
         const valueParts = data['receiverSelect'].value.split('_');
+        
 
         self.config.set('receiverIP', valueParts[0]);
         self.config.set('receiverPort', valueParts[3]);
@@ -416,6 +455,7 @@ onkyoControl.prototype.saveConnectionConfig = function (data) {
         newValues.model = valueParts[1];
     }
     else {
+        self.logger.debug(`ONKYO - Manual input selected`);
         self.config.set('receiverIP', data['receiverIP']);
         self.config.set('receiverModel', data['receiverModel']);
         newValues.host = data['receiverIP'];
@@ -432,21 +472,25 @@ onkyoControl.prototype.saveConnectionConfig = function (data) {
     }
 
     if (!(newValues.host --- self.connectionOptions.host)) {
-
+        self.logger.debug(`ONKYO - Connection host has changed`);
+        self.logger.debug(`ONKYO - Old connection ${JSON.stringify(self.connectionOptions)}`);
         self.connectionOptions.host = newValues.host;
         self.connectionOptions.port = parseInt(newValues.port);
         self.connectionOptions.model = newValues.model;
-
+        self.logger.debug(`ONKYO - New connection ${JSON.stringify(self.connectionOptions)}`);
+        self.logger.debug(`ONKYO - Update zones based on new information`);
         // Update Zone list
         self.updateZoneList();
 
         if (eiscp.is_connected) {
+            self.logger.debug(`ONKYO - Closing old connection`);
             eiscp.close();
         }
 
+        self.logger.debug(`ONKYO - Creating new connection`);
         eiscp.connect(self.connectionOptions);
     }
-
+    self.logger.debug(`ONKYO - Finished saving connection information`);
     self.commandRouter.pushToastMessage('success', self.getI18nString("SETTINGS_SAVED"), self.getI18nString("SETTINGS_SAVED_CONNECTION"));
     self.refreshUIConfig();
 
@@ -456,7 +500,7 @@ onkyoControl.prototype.saveConnectionConfig = function (data) {
 onkyoControl.prototype.saveActionConfig = function (data) {
     var self = this;
 
-
+    self.logger.debug(`ONKYO - saving action config`);
     self.logger.debug("ONKYO-CONTROL: saveActionConfig() data: " + JSON.stringify(data));
 
     self.config.set('powerOn', data['powerOn']);
@@ -496,6 +540,7 @@ onkyoControl.prototype.saveActionConfig = function (data) {
 
     self.commandRouter.pushToastMessage('success', self.getI18nString("SETTINGS_SAVED"), self.getI18nString("SETTINGS_SAVED_ACTION"));
 
+    self.logger.debug(`ONKYO - done saving actions`);
     return 1;
 };
 
@@ -529,8 +574,10 @@ onkyoControl.prototype.getI18nString = function (key) {
 onkyoControl.prototype.callReceiver = function (args) {
     const self = this;
 
+    self.logger.debug(`ONKYO - calling receiver with args: ${JSON.stringify(args)}`);
     // First make sure we have valid connection info.
     if (self.validConnectionOptions()) {
+        self.logger.debug(`ONKYO - Connection options are valid - ${JSON.stringify(self.connectionOptions)}`);
 
         /*
             If we aren't connected, wait 500ms to see if we connect.
@@ -539,6 +586,7 @@ onkyoControl.prototype.callReceiver = function (args) {
         */
 
         if (!eiscp.is_connected && args.waitToSend <= 5000) {
+            self.logger.debug(`ONKYO - Not connected, adding delay`);
 
             const waitToSend = (args.waitToSend === 500) ? 5000 : 9999;
             setTimeout(() => {
@@ -550,7 +598,7 @@ onkyoControl.prototype.callReceiver = function (args) {
             }, args.waitToSend);
         }
         else if (eiscp.is_connected) {
-
+            self.logger.debug(`ONKYO - Connected, sending command`);
             const zone = self.config.get('zone', 'main');
             /*
                 Onkyo expects volume to be in the range of 0 - 200. To make it easier
@@ -564,8 +612,10 @@ onkyoControl.prototype.callReceiver = function (args) {
             self.logger.debug(`ONKYO COMMAND: ${zone}.${args.action}=${args.value}`);
             eiscp.command(`${zone}.${args.action}=${args.value}`);
         }
-        else if (!eiscp.is_connected) {
+        
+        if (!eiscp.is_connected) {
 
+            self.logger.debug(`ONKYO - Not connected, attempting to connect`);
             // Give up, there is no more
             self.logger.error("ONKYO-CONTROL: Error sending command. Not Connected");
 
